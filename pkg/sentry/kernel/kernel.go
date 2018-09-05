@@ -358,7 +358,7 @@ func (k *Kernel) SaveTo(w io.Writer) error {
 	//
 	// N.B. This will also be saved along with the full kernel save below.
 	cpuidStart := time.Now()
-	if err := state.Save(w, k.FeatureSet(), nil); err != nil {
+	if err := state.Save(k.SupervisorContext(), w, k.FeatureSet(), nil); err != nil {
 		return err
 	}
 	log.Infof("CPUID save took [%s].", time.Since(cpuidStart))
@@ -366,7 +366,7 @@ func (k *Kernel) SaveTo(w io.Writer) error {
 	// Save the kernel state.
 	kernelStart := time.Now()
 	var stats state.Stats
-	if err := state.Save(w, k, &stats); err != nil {
+	if err := state.Save(k.SupervisorContext(), w, k, &stats); err != nil {
 		return err
 	}
 	log.Infof("Kernel save stats: %s", &stats)
@@ -374,7 +374,7 @@ func (k *Kernel) SaveTo(w io.Writer) error {
 
 	// Save the memory file's state.
 	memoryStart := time.Now()
-	if err := k.mf.SaveTo(w); err != nil {
+	if err := k.mf.SaveTo(k.SupervisorContext(), w); err != nil {
 		return err
 	}
 	log.Infof("Memory save took [%s].", time.Since(memoryStart))
@@ -509,7 +509,7 @@ func (k *Kernel) LoadFrom(r io.Reader, net inet.Stack, clocks sentrytime.Clocks)
 	// don't need to explicitly install it in the Kernel.
 	cpuidStart := time.Now()
 	var features cpuid.FeatureSet
-	if err := state.Load(r, &features, nil); err != nil {
+	if err := state.Load(k.SupervisorContext(), r, &features, nil); err != nil {
 		return err
 	}
 	log.Infof("CPUID load took [%s].", time.Since(cpuidStart))
@@ -525,7 +525,7 @@ func (k *Kernel) LoadFrom(r io.Reader, net inet.Stack, clocks sentrytime.Clocks)
 	// Load the kernel state.
 	kernelStart := time.Now()
 	var stats state.Stats
-	if err := state.Load(r, k, &stats); err != nil {
+	if err := state.Load(k.SupervisorContext(), r, k, &stats); err != nil {
 		return err
 	}
 	log.Infof("Kernel load stats: %s", &stats)
@@ -533,7 +533,7 @@ func (k *Kernel) LoadFrom(r io.Reader, net inet.Stack, clocks sentrytime.Clocks)
 
 	// Load the memory file's state.
 	memoryStart := time.Now()
-	if err := k.mf.LoadFrom(r); err != nil {
+	if err := k.mf.LoadFrom(k.SupervisorContext(), r); err != nil {
 		return err
 	}
 	log.Infof("Memory load took [%s].", time.Since(memoryStart))
@@ -1180,6 +1180,7 @@ func (k *Kernel) ListSockets() []*SocketEntry {
 	return socks
 }
 
+// supervisorContext is a privileged context.
 type supervisorContext struct {
 	context.NoopSleeper
 	log.Logger
