@@ -170,19 +170,19 @@ func (r *receiver) consumeSegment(s *segment, segSeq seqnum.Value, segLen seqnum
 		// We just received a FIN, our next state depends on whether we sent a
 		// FIN already or not.
 		r.ep.mu.Lock()
-		switch r.ep.state {
+		switch r.ep.EndpointState() {
 		case StateEstablished:
-			r.ep.state = StateCloseWait
+			r.ep.setEndpointState(StateCloseWait)
 		case StateFinWait1:
 			if s.flagIsSet(header.TCPFlagAck) {
 				// FIN-ACK, transition to TIME-WAIT.
-				r.ep.state = StateTimeWait
+				r.ep.setEndpointState(StateTimeWait)
 			} else {
 				// Simultaneous close, expecting a final ACK.
-				r.ep.state = StateClosing
+				r.ep.setEndpointState(StateClosing)
 			}
 		case StateFinWait2:
-			r.ep.state = StateTimeWait
+			r.ep.setEndpointState(StateTimeWait)
 		}
 		r.ep.mu.Unlock()
 
@@ -206,13 +206,13 @@ func (r *receiver) consumeSegment(s *segment, segSeq seqnum.Value, segLen seqnum
 	// shutdown states.
 	if s.flagIsSet(header.TCPFlagAck) {
 		r.ep.mu.Lock()
-		switch r.ep.state {
+		switch r.ep.EndpointState() {
 		case StateFinWait1:
-			r.ep.state = StateFinWait2
+			r.ep.setEndpointState(StateFinWait2)
 		case StateClosing:
-			r.ep.state = StateTimeWait
+			r.ep.setEndpointState(StateTimeWait)
 		case StateLastAck:
-			r.ep.state = StateClose
+			r.ep.setEndpointState(StateClose)
 		}
 		r.ep.mu.Unlock()
 	}

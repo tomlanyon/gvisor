@@ -48,7 +48,7 @@ func (e *endpoint) beforeSave() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	switch e.state {
+	switch e.EndpointState() {
 	case StateInitial, StateBound:
 		// TODO(b/138137272): this enumeration duplicates
 		// EndpointState.connected. remove it.
@@ -70,31 +70,30 @@ func (e *endpoint) beforeSave() {
 		fallthrough
 	case StateListen, StateConnecting:
 		e.drainSegmentLocked()
-		if e.state != StateClose && e.state != StateError {
+		if e.EndpointState() != StateClose && e.EndpointState() != StateError {
 			if !e.workerRunning {
 				panic("endpoint has no worker running in listen, connecting, or connected state")
 			}
 			break
 		}
-		fallthrough
 	case StateError, StateClose:
-		for e.state == StateError && e.workerRunning {
+		for e.workerRunning {
 			e.mu.Unlock()
 			time.Sleep(100 * time.Millisecond)
 			e.mu.Lock()
 		}
 		if e.workerRunning {
-			panic("endpoint still has worker running in closed or error state")
+			panic(fmt.Sprintf("endpoint: %+v still has worker running in closed or error state", e.id))
 		}
 	default:
-		panic(fmt.Sprintf("endpoint in unknown state %v", e.state))
+		panic(fmt.Sprintf("endpoint in unknown state %v", e.EndpointState()))
 	}
 
 	if e.waiterQueue != nil && !e.waiterQueue.IsEmpty() {
 		panic("endpoint still has waiters upon save")
 	}
 
-	if e.state != StateClose && !((e.state == StateBound || e.state == StateListen) == e.isPortReserved) {
+	if e.EndpointState() != StateClose && !((e.EndpointState() == StateBound || e.EndpointState() == StateListen) == e.isPortReserved) {
 		panic("endpoints which are not in the closed state must have a reserved port IFF they are in bound or listen state")
 	}
 }
@@ -135,7 +134,7 @@ func (e *endpoint) loadAcceptedChan(acceptedEndpoints []*endpoint) {
 
 // saveState is invoked by stateify.
 func (e *endpoint) saveState() EndpointState {
-	return e.state
+	return e.EndpointState()
 }
 
 // Endpoint loading must be done in the following ordering by their state, to
@@ -151,7 +150,8 @@ var connectingLoading sync.WaitGroup
 func (e *endpoint) loadState(state EndpointState) {
 	// This is to ensure that the loading wait groups include all applicable
 	// endpoints before any asynchronous calls to the Wait() methods.
-	if state.connected() {
+	// For restore purposes we treat TimeWait like a connected endpoint.
+	if state.connected() || state == StateTimeWait {
 		connectedLoading.Add(1)
 	}
 	switch state {
@@ -160,11 +160,17 @@ func (e *endpoint) loadState(state EndpointState) {
 	case StateConnecting, StateSynSent, StateSynRecv:
 		connectingLoading.Add(1)
 	}
-	e.state = state
+	e.setEndpointState(state)
 }
 
 // afterLoad is invoked by stateify.
 func (e *endpoint) afterLoad() {
+	// Freeze segment queue before registering to prevent any segments
+	// from being delivered while it is being restored.
+	e.origEndpointState = e.EndpointState()
+	// Restore the endpoint to InitialState as it will be moved to
+	// its origEndpointState during Resume.
+	e.setEndpointState(StateInitial)
 	stack.StackFromEnv.RegisterRestoredEndpoint(e)
 }
 
@@ -173,8 +179,7 @@ func (e *endpoint) Resume(s *stack.Stack) {
 	e.stack = s
 	e.segmentQueue.setLimit(MaxUnprocessedSegments)
 	e.workMu.Init()
-
-	state := e.state
+	state := e.origEndpointState
 	switch state {
 	case StateInitial, StateBound, StateListen, StateConnecting, StateEstablished:
 		var ss SendBufferSizeOption
@@ -189,7 +194,6 @@ func (e *endpoint) Resume(s *stack.Stack) {
 	}
 
 	bind := func() {
-		e.state = StateInitial
 		if len(e.bindAddress) == 0 {
 			e.bindAddress = e.id.LocalAddress
 		}
@@ -217,6 +221,7 @@ func (e *endpoint) Resume(s *stack.Stack) {
 		if err := e.connect(tcpip.FullAddress{NIC: e.boundNICID, Addr: e.connectingAddress, Port: e.id.RemotePort}, false, e.workerRunning); err != tcpip.ErrConnectStarted {
 			panic("endpoint connecting failed: " + err.String())
 		}
+		e.setEndpointState(e.origEndpointState)
 		connectedLoading.Done()
 	case StateListen:
 		tcpip.AsyncLoading.Add(1)
@@ -259,14 +264,17 @@ func (e *endpoint) Resume(s *stack.Stack) {
 				listenLoading.Wait()
 				connectingLoading.Wait()
 				bind()
-				e.state = StateClose
+				e.setEndpointState(StateClose)
 				tcpip.AsyncLoading.Done()
 			}()
 		}
-		fallthrough
-	case StateError:
 		tcpip.DeleteDanglingEndpoint(e)
+	case StateError:
+		fallthrough
+	default:
+		e.setEndpointState(e.origEndpointState)
 	}
+
 }
 
 // saveLastError is invoked by stateify.

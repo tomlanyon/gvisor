@@ -17,6 +17,7 @@ package tcp_test
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"math"
 	"testing"
 	"time"
@@ -255,6 +256,7 @@ func TestTCPResetSentForACKWhenNotUsingSynCookies(t *testing.T) {
 		}
 	}
 
+	log.Printf("accepted sock")
 	c.EP.Close()
 	checker.IPv4(t, c.GetPacket(), checker.TCP(
 		checker.SrcPort(context.StackPort),
@@ -262,7 +264,6 @@ func TestTCPResetSentForACKWhenNotUsingSynCookies(t *testing.T) {
 		checker.SeqNum(uint32(c.IRS+1)),
 		checker.AckNum(uint32(iss)+1),
 		checker.TCPFlags(header.TCPFlagFin|header.TCPFlagAck)))
-
 	finHeaders := &context.Headers{
 		SrcPort: context.TestPort,
 		DstPort: context.StackPort,
@@ -275,6 +276,11 @@ func TestTCPResetSentForACKWhenNotUsingSynCookies(t *testing.T) {
 
 	// Get the ACK to the FIN we just sent.
 	c.GetPacket()
+
+	// Netstack today has a 3 second close timer to release the port
+	// reservation. So wait for a little over 3 seconds before we
+	// send the ack.
+	time.Sleep(4 * time.Second)
 
 	// Now resend the same ACK, this ACK should generate a RST as there
 	// should be no endpoint in SYN-RCVD state and we are not using
@@ -404,7 +410,10 @@ func TestConnectResetAfterClose(t *testing.T) {
 		checker.IPv4(t, b,
 			checker.TCP(
 				checker.DstPort(context.TestPort),
-				checker.SeqNum(uint32(c.IRS)+1),
+				// RST is always generated with sndNxt which if the FIN
+				// has been sent will be 1 higher than the sequence number
+				// of the FIN itself.
+				checker.SeqNum(uint32(c.IRS)+2),
 				checker.AckNum(790),
 				checker.TCPFlags(header.TCPFlagAck|header.TCPFlagRst),
 			),
@@ -820,8 +829,10 @@ func TestRstOnCloseWithUnreadDataFinConvertRst(t *testing.T) {
 		checker.TCP(
 			checker.DstPort(context.TestPort),
 			checker.TCPFlags(header.TCPFlagAck|header.TCPFlagRst),
-			// We shouldn't consume a sequence number on RST.
-			checker.SeqNum(uint32(c.IRS)+1),
+			// RST is always generated with sndNxt which if the FIN
+			// has been sent will be 1 higher than the sequence
+			// number of the FIN itself.
+			checker.SeqNum(uint32(c.IRS)+2),
 		))
 	// The RST puts the endpoint into an error state.
 	if got, want := tcp.EndpointState(c.EP.State()), tcp.StateError; got != want {
@@ -4282,6 +4293,9 @@ func TestReceiveBufferAutoTuningApplicationLimited(t *testing.T) {
 		rawEP.SendPacketWithTS(b[start:start+mss], tsVal)
 		packetsSent++
 	}
+	// Give 5ms for the processor to queue the packets to the endpoint.
+	time.Sleep(5 * time.Millisecond)
+
 	// Resume the worker so that it only sees the packets once all of them
 	// are waiting to be read.
 	worker.ResumeWork()
@@ -4349,7 +4363,7 @@ func TestReceiveBufferAutoTuning(t *testing.T) {
 	stk := c.Stack()
 	// Set lower limits for auto-tuning tests. This is required because the
 	// test stops the worker which can cause packets to be dropped because
-	// the segment queue holding unprocessed packets is limited to 500.
+	// the segment queue holding unprocessed packets is limited to 300.
 	const receiveBufferSize = 80 << 10 // 80KB.
 	const maxReceiveBufferSize = receiveBufferSize * 10
 	if err := stk.SetTransportProtocolOption(tcp.ProtocolNumber, tcp.ReceiveBufferSizeOption{1, receiveBufferSize, maxReceiveBufferSize}); err != nil {
@@ -4404,6 +4418,9 @@ func TestReceiveBufferAutoTuning(t *testing.T) {
 			totalSent += mss
 			packetsSent++
 		}
+		// Give 5ms for the processor to queue the packets to the endpoint.
+		time.Sleep(5 * time.Millisecond)
+
 		// Resume it so that it only sees the packets once all of them
 		// are waiting to be read.
 		worker.ResumeWork()
