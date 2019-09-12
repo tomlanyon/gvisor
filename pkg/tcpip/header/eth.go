@@ -48,6 +48,20 @@ const (
 
 	// EthernetAddressSize is the size, in bytes, of an ethernet address.
 	EthernetAddressSize = 6
+
+	// unspecifiedEthernetAddress is the unspecified ethernet address
+	// (all bits set to 0).
+	unspecifiedEthernetAddress = tcpip.LinkAddress("\x00\x00\x00\x00\x00\x00")
+
+	// unicastMulticastFlagMask is the mask of the least significant bit in
+	// the first octet of an ethernet address that determines whether
+	// the ethernet address is a unicast or multicast. If the masked
+	// bit is a 1, then the address is a multicast, unicast otherwise.
+	unicastMulticastFlagMask = 1
+
+	// unicastMulticastFlagByteIdx is the byte that holds the
+	// unicast/multicast flag. See unicastMulticastFlagMask.
+	unicastMulticastFlagByteIdx = 0
 )
 
 // SourceAddress returns the "MAC source" field of the ethernet frame header.
@@ -71,4 +85,26 @@ func (b Ethernet) Encode(e *EthernetFields) {
 	binary.BigEndian.PutUint16(b[ethType:], uint16(e.Type))
 	copy(b[srcMAC:][:EthernetAddressSize], e.SrcAddr)
 	copy(b[dstMAC:][:EthernetAddressSize], e.DstAddr)
+}
+
+// IsValidUnicastEthernetAddress returns true if addr is a valid unicast
+// ethernet address.
+func IsValidUnicastEthernetAddress(addr tcpip.LinkAddress) bool {
+	// Must be of the right length.
+	if len(addr) != EthernetAddressSize {
+		return false
+	}
+
+	// Must not be unspecified.
+	if addr == unspecifiedEthernetAddress {
+		return false
+	}
+
+	// Must not be a multicast.
+	if addr[unicastMulticastFlagByteIdx]&unicastMulticastFlagMask != 0 {
+		return false
+	}
+
+	// addr is a valid unicast ethernet address.
+	return true
 }

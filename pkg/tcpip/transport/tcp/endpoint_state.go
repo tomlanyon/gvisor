@@ -350,6 +350,7 @@ func loadError(s string) *tcpip.Error {
 			tcpip.ErrBroadcastDisabled,
 			tcpip.ErrNotPermitted,
 			tcpip.ErrAddressFamilyNotSupported,
+			tcpip.ErrUnexpectedInternal,
 		}
 
 		messageToError = make(map[string]*tcpip.Error)
