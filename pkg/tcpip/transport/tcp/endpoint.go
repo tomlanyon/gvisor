@@ -2207,6 +2207,22 @@ func (e *endpoint) State() uint32 {
 	return uint32(e.state)
 }
 
+// Wait implements stack.TransportEndpoint.Wait.
+func (e *endpoint) Wait() {
+	waitEntry, notifyCh := waiter.NewChannelEntry(nil)
+	e.waiterQueue.EventRegister(&waitEntry, waiter.EventHUp)
+	defer e.waiterQueue.EventUnregister(&waitEntry)
+	for {
+		e.mu.Lock()
+		running := e.workerRunning
+		e.mu.Unlock()
+		if !running {
+			break
+		}
+		<-notifyCh
+	}
+}
+
 func mssForRoute(r *stack.Route) uint16 {
 	return uint16(r.MTU() - header.TCPMinimumSize)
 }
