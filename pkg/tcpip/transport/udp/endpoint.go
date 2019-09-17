@@ -1130,6 +1130,9 @@ func (e *endpoint) State() uint32 {
 	return uint32(e.state)
 }
 
+// Wait implements tcpip.Endpoint.Wait.
+func (*endpoint) Wait() {}
+
 func isBroadcastOrMulticast(a tcpip.Address) bool {
 	return a == header.IPv4Broadcast || header.IsV4MulticastAddress(a) || header.IsV6MulticastAddress(a)
 }
