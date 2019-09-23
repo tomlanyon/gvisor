@@ -26,6 +26,12 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/seqnum"
 )
 
+// GenericChecker is a function to do some checks on some type.
+//
+// It is up to the GenericChecker to make sure that it casts the passed
+// value to the correct type to do checks on.
+type GenericChecker func(*testing.T, interface{})
+
 // NetworkChecker is a function to check a property of a network packet.
 type NetworkChecker func(*testing.T, []header.Network)
 
@@ -683,6 +689,67 @@ func ICMPv6Code(want byte) TransportChecker {
 		}
 		if got := icmpv6.Code(); got != want {
 			t.Fatalf("unexpected ICMP code got: %d, want: %d", got, want)
+		}
+	}
+}
+
+// NDP creates a checker that checks that the packet contains a valid NDP
+// message for type of ty, with potentially additional checks specified by
+// checkers.
+//
+// checkers may assume that a valid ICMPv6 is passed to it containing a valid
+// NDP message as far as the size of the message (minSize) is concerned. The
+// values within the message are up to checkers to validate.
+func NDP(msgType header.ICMPv6Type, minSize int, checkers ...TransportChecker) NetworkChecker {
+	return func(t *testing.T, h []header.Network) {
+		t.Helper()
+
+		// Check normal ICMPv6 first.
+		ICMPv6(
+			ICMPv6Type(msgType),
+			ICMPv6Code(0))(t, h)
+
+		last := h[len(h)-1]
+
+		icmp := header.ICMPv6(last.Payload())
+		if got := len(icmp.NDPPayload()); got < minSize {
+			t.Fatalf("ICMPv6 NDP (type = %d) payload size of %d is less than the minimum size of %d", msgType, got, minSize)
+		}
+
+		for _, f := range checkers {
+			f(t, icmp)
+		}
+		if t.Failed() {
+			t.FailNow()
+		}
+	}
+}
+
+// NDPNS creates a checker that checks that the packet contains a valid NDP
+// Neighbor Solicitation message (as per the raw wire format), with potentially
+// additional checks specified by checkers.
+//
+// checkers may assume that a valid ICMPv6 is passed to it containing a valid
+// NDPNS message as far as the size of the messages concerned. The values within
+// the message are up to checkers to validate.
+func NDPNS(checkers ...TransportChecker) NetworkChecker {
+	return NDP(header.ICMPv6NeighborSolicit, header.NDPNSMinimumSize, checkers...)
+}
+
+// NDPNSTargetAddress creates a checker that checks the Target Address field of
+// a header.NDPNeighborSolicit.
+//
+// The returned TransportChecker assumes that a valid ICMPv6 is passed to it
+// containing a valid NDPNS message as far as the size is concerned.
+func NDPNSTargetAddress(want tcpip.Address) TransportChecker {
+	return func(t *testing.T, h header.Transport) {
+		t.Helper()
+
+		icmp := h.(header.ICMPv6)
+		ns := header.NDPNeighborSolicit(icmp.NDPPayload())
+
+		if got := ns.TargetAddress(); got != want {
+			t.Fatalf("unexpected NDP NS Target Address got: %s, want: %s", got, want)
 		}
 	}
 }
