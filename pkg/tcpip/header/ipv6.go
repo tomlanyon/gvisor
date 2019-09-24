@@ -87,11 +87,14 @@ const (
 	// section 5.
 	IPv6MinimumMTU = 1280
 
-	// IPv6Any is the non-routable IPv6 "any" meta address.
+	// IPv6Any is the non-routable IPv6 "any" meta address. It is also
+	// known as the unspecified address.
 	IPv6Any tcpip.Address = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
-// IPv6EmptySubnet is the empty IPv6 subnet.
+// IPv6EmptySubnet is the empty IPv6 subnet. It may also be known as the
+// catch-all or wildcard subnet. That is, all IPv6 addresses are considered to
+// be contained within this subnet.
 var IPv6EmptySubnet = func() tcpip.Subnet {
 	subnet, err := tcpip.NewSubnet(IPv6Any, tcpip.AddressMask(IPv6Any))
 	if err != nil {

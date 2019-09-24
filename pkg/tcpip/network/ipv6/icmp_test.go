@@ -129,7 +129,7 @@ func TestICMPCounts(t *testing.T) {
 		{header.ICMPv6EchoRequest, header.ICMPv6EchoMinimumSize},
 		{header.ICMPv6EchoReply, header.ICMPv6EchoMinimumSize},
 		{header.ICMPv6RouterSolicit, header.ICMPv6MinimumSize},
-		{header.ICMPv6RouterAdvert, header.ICMPv6MinimumSize},
+		{header.ICMPv6RouterAdvert, header.ICMPv6HeaderSize + header.NDPRAMinimumSize},
 		{header.ICMPv6NeighborSolicit, header.ICMPv6NeighborSolicitMinimumSize},
 		{header.ICMPv6NeighborAdvert, header.ICMPv6NeighborAdvertSize},
 		{header.ICMPv6RedirectMsg, header.ICMPv6MinimumSize},
