@@ -502,6 +502,11 @@ type endpoint struct {
 
 	// TODO(b/142022063): Add ability to save and restore per endpoint stats.
 	stats Stats `state:"nosave"`
+
+	// tcpLingerTimeout is the maximum amount of a time a socket
+	// a socket stays in TIME_WAIT state before being marked
+	// closed.
+	tcpLingerTimeout time.Duration
 }
 
 // StopWork halts packet processing. Only to be used in tests.
@@ -570,6 +575,11 @@ func newEndpoint(s *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQue
 	var mrb tcpip.ModerateReceiveBufferOption
 	if err := s.TransportProtocolOption(ProtocolNumber, &mrb); err == nil {
 		e.rcvAutoParams.disabled = !bool(mrb)
+	}
+
+	var tcpLT tcpip.TCPLingerTimeoutOption
+	if err := s.TransportProtocolOption(ProtocolNumber, &tcpLT); err == nil {
+		e.tcpLingerTimeout = time.Duration(tcpLT)
 	}
 
 	if p := s.GetTCPProbe(); p != nil {
@@ -1319,6 +1329,26 @@ func (e *endpoint) SetSockOpt(opt interface{}) *tcpip.Error {
 		e.mu.Unlock()
 		return nil
 
+	case tcpip.TCPLingerTimeoutOption:
+		e.mu.Lock()
+		if v < 0 {
+			// Same as effectively disabling TIME_WAIT state.
+			v = 0
+		}
+		var stkTCPLingerTimeout tcpip.TCPLingerTimeoutOption
+		if err := e.stack.TransportProtocolOption(header.TCPProtocolNumber, &stkTCPLingerTimeout); err != nil {
+			// Override it with the default value.
+			v = tcpip.TCPLingerTimeoutOption(DefaultTCPLingerTimeout)
+		}
+
+		// Cap it to the stack wide TIME_WAIT timeout.
+		if v > stkTCPLingerTimeout {
+			v = stkTCPLingerTimeout
+		}
+		e.tcpLingerTimeout = time.Duration(v)
+		e.mu.Unlock()
+		return nil
+
 	default:
 		return nil
 	}
@@ -1345,6 +1375,7 @@ func (e *endpoint) GetSockOptInt(opt tcpip.SockOpt) (int, *tcpip.Error) {
 	switch opt {
 	case tcpip.ReceiveQueueSizeOption:
 		return e.readyReceiveSize()
+
 	case tcpip.SendBufferSizeOption:
 		e.sndBufMu.Lock()
 		v := e.sndBufSize
@@ -1528,6 +1559,12 @@ func (e *endpoint) GetSockOpt(opt interface{}) *tcpip.Error {
 		e.mu.RLock()
 		*o = tcpip.IPv6TrafficClassOption(e.sendTOS)
 		e.mu.RUnlock()
+		return nil
+
+	case *tcpip.TCPLingerTimeoutOption:
+		e.mu.Lock()
+		*o = tcpip.TCPLingerTimeoutOption(e.tcpLingerTimeout)
+		e.mu.Unlock()
 		return nil
 
 	default:

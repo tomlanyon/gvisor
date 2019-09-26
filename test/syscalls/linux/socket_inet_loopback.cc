@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <arpa/inet.h>
+#include <linux/tcp.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <string.h>
@@ -266,6 +267,88 @@ TEST_P(SocketInetLoopbackTest, TCPbacklog) {
   }
 }
 
+// TCPTimeWaitTest creates a pair of connected sockets then closes one end to
+// trigger TIME_WAIT state for the closed endpoint. Then it binds the same local
+// IP/port on a new socket and tries to connect. The connect should fail w/
+// an EADDRINUSE. Then we wait till the TIME_WAIT state is over and try the
+// connect again with a new socket and this time it should succeed.
+TEST_P(SocketInetLoopbackTest, TCPTimeWaitTest) {
+  auto const& param = GetParam();
+  TestAddress const& listener = param.listener;
+  TestAddress const& connector = param.connector;
+
+  // Create the listening socket.
+  const FileDescriptor listen_fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Socket(listener.family(), SOCK_STREAM, IPPROTO_TCP));
+  sockaddr_storage listen_addr = listener.addr;
+  ASSERT_THAT(bind(listen_fd.get(), reinterpret_cast<sockaddr*>(&listen_addr),
+                   listener.addr_len),
+              SyscallSucceeds());
+  ASSERT_THAT(listen(listen_fd.get(), SOMAXCONN), SyscallSucceeds());
+
+  // Get the port bound by the listening socket.
+  socklen_t addrlen = listener.addr_len;
+  ASSERT_THAT(getsockname(listen_fd.get(),
+                          reinterpret_cast<sockaddr*>(&listen_addr), &addrlen),
+              SyscallSucceeds());
+  uint16_t const port =
+      ASSERT_NO_ERRNO_AND_VALUE(AddrPort(listener.family(), listen_addr));
+
+  // Connect to the listening socket.
+  FileDescriptor conn_fd = ASSERT_NO_ERRNO_AND_VALUE(
+      Socket(connector.family(), SOCK_STREAM, IPPROTO_TCP));
+
+  // Lower TIME_WAIT state to 5 seconds for test.
+  constexpr int kTCPLingerTimeout = 5;
+  EXPECT_THAT(setsockopt(conn_fd.get(), IPPROTO_TCP, TCP_LINGER2,
+                         &kTCPLingerTimeout, sizeof(kTCPLingerTimeout)),
+              SyscallSucceedsWithValue(0));
+
+  sockaddr_storage conn_addr = connector.addr;
+  ASSERT_NO_ERRNO(SetAddrPort(connector.family(), &conn_addr, port));
+  ASSERT_THAT(RetryEINTR(connect)(conn_fd.get(),
+                                  reinterpret_cast<sockaddr*>(&conn_addr),
+                                  connector.addr_len),
+              SyscallSucceeds());
+
+  // Accept the connection.
+  auto accepted =
+      ASSERT_NO_ERRNO_AND_VALUE(Accept(listen_fd.get(), nullptr, nullptr));
+
+  // Get the address/port bound by the connecting socket.
+  sockaddr_storage conn_bound_addr;
+  socklen_t conn_addrlen = connector.addr_len;
+  ASSERT_THAT(
+      getsockname(conn_fd.get(), reinterpret_cast<sockaddr*>(&conn_bound_addr),
+                  &conn_addrlen),
+      SyscallSucceeds());
+  // close the connecting FD to trigger TIME_WAIT.
+  conn_fd.reset();
+
+  // Now bind and connect a new socket.
+  const FileDescriptor conn_fd2 = ASSERT_NO_ERRNO_AND_VALUE(
+      Socket(connector.family(), SOCK_STREAM, IPPROTO_TCP));
+
+  // TODO(gvisor.dev/issue/1030): Portmanager does not track all 5 tuple
+  //   reservations which causes the bind() to succeed on gVisor but connect
+  //   correctly fails.
+  if (IsRunningOnGvisor()) {
+    ASSERT_THAT(
+        bind(conn_fd2.get(), reinterpret_cast<sockaddr*>(&conn_bound_addr),
+             conn_addrlen),
+        SyscallSucceeds());
+    ASSERT_THAT(RetryEINTR(connect)(conn_fd2.get(),
+                                    reinterpret_cast<sockaddr*>(&conn_addr),
+                                    conn_addrlen),
+                SyscallFailsWithErrno(EADDRINUSE));
+  } else {
+    ASSERT_THAT(
+        bind(conn_fd2.get(), reinterpret_cast<sockaddr*>(&conn_bound_addr),
+             conn_addrlen),
+        SyscallFailsWithErrno(EADDRINUSE));
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     All, SocketInetLoopbackTest,
     ::testing::Values(
@@ -380,7 +463,7 @@ TEST_P(SocketInetReusePortTest, TcpPortReuseMultiThread) {
 
   ScopedThread connecting_thread([&connector, &conn_addr]() {
     for (int i = 0; i < kConnectAttempts; i++) {
-      const FileDescriptor fd = ASSERT_NO_ERRNO_AND_VALUE(
+      FileDescriptor fd = ASSERT_NO_ERRNO_AND_VALUE(
           Socket(connector.family(), SOCK_STREAM, IPPROTO_TCP));
       ASSERT_THAT(
           RetryEINTR(connect)(fd.get(), reinterpret_cast<sockaddr*>(&conn_addr),
