@@ -22,6 +22,7 @@ package stack
 import (
 	"encoding/binary"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -396,6 +397,18 @@ type Stack struct {
 	//
 	// TODO(gvisor.dev/issues/940): S/R this field.
 	portSeed uint32
+
+	// uniqueIDGenerator is a generator of unique identifiers.
+	uniqueIDGenerator UniqueID
+
+	// uniqueID is used to generate unique identifiers when
+	// uniqueIDGenerator isn't set.
+	uniqueID uint64
+}
+
+// UniqueID is an abstract generator of unique identifiers.
+type UniqueID interface {
+	UniqueID() uint64
 }
 
 // Options contains optional Stack configuration.
@@ -422,6 +435,9 @@ type Options struct {
 	// UnassociatedFactory produces unassociated endpoints raw endpoints.
 	// Raw endpoints are enabled only if this is non-nil.
 	UnassociatedFactory UnassociatedEndpointFactory
+
+	// UniqueID is an optional generator of unique identifiers.
+	UniqueID UniqueID
 }
 
 // TransportEndpointInfo holds useful information about a transport endpoint
@@ -477,6 +493,7 @@ func New(opts Options) *Stack {
 		handleLocal:        opts.HandleLocal,
 		icmpRateLimiter:    NewICMPRateLimiter(),
 		portSeed:           generateRandUint32(),
+		uniqueIDGenerator:  opts.UniqueID,
 	}
 
 	// Add specified network protocols.
@@ -501,6 +518,15 @@ func New(opts Options) *Stack {
 	s.demux = newTransportDemuxer(s)
 
 	return s
+}
+
+// UniqueID returns a unique identifier.
+func (s *Stack) UniqueID() uint64 {
+	if s.uniqueIDGenerator != nil {
+		v := s.uniqueIDGenerator.UniqueID()
+		return v
+	}
+	return atomic.AddUint64(&s.uniqueID, 1)
 }
 
 // SetNetworkProtocolOption allows configuring individual protocol level

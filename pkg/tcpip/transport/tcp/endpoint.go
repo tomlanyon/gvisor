@@ -287,6 +287,7 @@ type endpoint struct {
 	// change throughout the lifetime of the endpoint.
 	stack       *stack.Stack  `state:"manual"`
 	waiterQueue *waiter.Queue `state:"wait"`
+	uniqueID    uint64
 
 	// lastError represents the last error that the endpoint reported;
 	// access to it is protected by the following mutex.
@@ -500,6 +501,11 @@ type endpoint struct {
 	stats Stats `state:"nosave"`
 }
 
+// UniqueID implements stack.TransportEndpoint.UniqueID
+func (e *endpoint) UniqueID() uint64 {
+	return e.uniqueID
+}
+
 // StopWork halts packet processing. Only to be used in tests.
 func (e *endpoint) StopWork() {
 	e.workMu.Lock()
@@ -546,6 +552,7 @@ func newEndpoint(s *stack.Stack, netProto tcpip.NetworkProtocolNumber, waiterQue
 			interval: 75 * time.Second,
 			count:    9,
 		},
+		uniqueID: s.UniqueID(),
 	}
 
 	var ss SendBufferSizeOption
