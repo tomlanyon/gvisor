@@ -28,7 +28,6 @@ import (
 	"gvisor.dev/gvisor/pkg/sentry/fs/fsutil"
 	"gvisor.dev/gvisor/pkg/sentry/kernel"
 	ktime "gvisor.dev/gvisor/pkg/sentry/kernel/time"
-	"gvisor.dev/gvisor/pkg/sentry/safemem"
 	"gvisor.dev/gvisor/pkg/sentry/socket"
 	"gvisor.dev/gvisor/pkg/sentry/socket/netlink/port"
 	"gvisor.dev/gvisor/pkg/sentry/socket/unix"
@@ -415,24 +414,6 @@ func (s *Socket) RecvMsg(t *kernel.Task, dst usermem.IOSequence, flags int, have
 	r := unix.EndpointReader{
 		Endpoint: s.ep,
 		Peek:     flags&linux.MSG_PEEK != 0,
-	}
-
-	// If MSG_TRUNC is set with a zero byte destination then we still need
-	// to read the message and discard it, or in the case where MSG_PEEK is
-	// set, leave it be. In both cases the full message length must be
-	// returned. However, the memory manager for the destination will not read
-	// the endpoint if the destination is zero length.
-	//
-	// In order for the endpoint to be read when the destination size is zero,
-	// we must cause a read of the endpoint by using a separate fake zero
-	// length block sequence and calling the EndpointReader directly.
-	if trunc && dst.Addrs.NumBytes() == 0 {
-		// Perform a read to a zero byte block sequence. We can ignore the
-		// original destination since it was zero bytes. The length returned by
-		// ReadToBlocks is ignored and we return the full message length to comply
-		// with MSG_TRUNC.
-		_, err := r.ReadToBlocks(safemem.BlockSeqOf(safemem.BlockFromSafeSlice(make([]byte, 0))))
-		return int(r.MsgSize), linux.MSG_TRUNC, from, fromLen, socket.ControlMessages{}, syserr.FromError(err)
 	}
 
 	if n, err := dst.CopyOutFrom(t, &r); err != syserror.ErrWouldBlock || flags&linux.MSG_DONTWAIT != 0 {

@@ -225,5 +225,84 @@ TEST_P(NonStreamSocketPairTest, MsgTruncNotFull) {
   EXPECT_EQ(0, memcmp(sent_data, received_data, sizeof(sent_data)));
 }
 
+// This test tests reading from a socket with MSG_TRUNC and a zero length
+// receive buffer. The user should be able to get the message length.
+TEST_P(NonStreamSocketPairTest, RecvmsgMsgTruncZeroLen) {
+  auto sockets = ASSERT_NO_ERRNO_AND_VALUE(NewSocketPair());
+
+  char sent_data[10];
+  RandomizeBuffer(sent_data, sizeof(sent_data));
+  ASSERT_THAT(
+      RetryEINTR(send)(sockets->first_fd(), sent_data, sizeof(sent_data), 0),
+      SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  // The receive buffer is of zero length.
+  char received_data[0] = {};
+
+  struct iovec iov;
+  iov.iov_base = received_data;
+  iov.iov_len = sizeof(received_data);
+  struct msghdr msg = {};
+  msg.msg_flags = -1;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+
+  // The syscall succeeds returning the full size of the message on the socket.
+  ASSERT_THAT(RetryEINTR(recvmsg)(sockets->second_fd(), &msg, MSG_TRUNC),
+              SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  // Check that msghdr flags were updated.
+  EXPECT_EQ(msg.msg_flags, MSG_TRUNC);
+}
+
+// This test tests reading from a socket with MSG_TRUNC | MSG_PEEK and a zero
+// length receive buffer. The user should be able to get the message length
+// without reading data off the socket.
+TEST_P(NonStreamSocketPairTest, RecvmsgMsgTruncMsgPeekZeroLen) {
+  auto sockets = ASSERT_NO_ERRNO_AND_VALUE(NewSocketPair());
+
+  char sent_data[10];
+  RandomizeBuffer(sent_data, sizeof(sent_data));
+  ASSERT_THAT(
+      RetryEINTR(send)(sockets->first_fd(), sent_data, sizeof(sent_data), 0),
+      SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  // The receive buffer is of zero length.
+  char peek_data[0] = {};
+
+  struct iovec peek_iov;
+  peek_iov.iov_base = peek_data;
+  peek_iov.iov_len = sizeof(peek_data);
+  struct msghdr peek_msg = {};
+  peek_msg.msg_flags = -1;
+  peek_msg.msg_iov = &peek_iov;
+  peek_msg.msg_iovlen = 1;
+
+  // The syscall succeeds returning the full size of the message on the socket.
+  ASSERT_THAT(RetryEINTR(recvmsg)(sockets->second_fd(), &peek_msg,
+                                  MSG_TRUNC | MSG_PEEK),
+              SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  // Check that msghdr flags were updated.
+  EXPECT_EQ(peek_msg.msg_flags, MSG_TRUNC);
+
+  char received_data[sizeof(sent_data)] = {};
+
+  struct iovec received_iov;
+  received_iov.iov_base = received_data;
+  received_iov.iov_len = sizeof(received_data);
+  struct msghdr received_msg = {};
+  received_msg.msg_flags = -1;
+  received_msg.msg_iov = &received_iov;
+  received_msg.msg_iovlen = 1;
+
+  // Next we can read the actual data.
+  ASSERT_THAT(
+      RetryEINTR(recvmsg)(sockets->second_fd(), &received_msg, MSG_TRUNC),
+      SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  EXPECT_EQ(0, memcmp(sent_data, received_data, sizeof(sent_data)));
+}
+
 }  // namespace testing
 }  // namespace gvisor

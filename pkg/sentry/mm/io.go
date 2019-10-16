@@ -234,7 +234,12 @@ func (mm *MemoryManager) CopyOutFrom(ctx context.Context, ars usermem.AddrRangeS
 	}
 
 	if ars.NumBytes() == 0 {
-		return 0, nil
+		// Perform a read to a zero byte block sequence. We can ignore the
+		// original destination since it was zero bytes. We call ReadtoBlocks
+		// here in order to support readers that need to peek at data without
+		// actually reading any bytes (e.g. sockets).
+		n, err := src.ReadToBlocks(safemem.BlockSeqOf(safemem.BlockFromSafeSlice(make([]byte, 0))))
+		return int64(n), err
 	}
 
 	// Do AddressSpace IO if applicable.

@@ -108,6 +108,60 @@ TEST_P(StreamSocketPairTest, RecvmsgMsghdrFlagsNoMsgTrunc) {
   EXPECT_EQ(msg.msg_flags, 0);
 }
 
+TEST_P(StreamSocketPairTest, RecvmsgTruncZeroLen) {
+  auto sockets = ASSERT_NO_ERRNO_AND_VALUE(NewSocketPair());
+
+  char sent_data[10];
+  RandomizeBuffer(sent_data, sizeof(sent_data));
+  ASSERT_THAT(
+      RetryEINTR(send)(sockets->first_fd(), sent_data, sizeof(sent_data), 0),
+      SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  char received_data[0] = {};
+
+  struct iovec iov;
+  iov.iov_base = received_data;
+  iov.iov_len = sizeof(received_data);
+  struct msghdr msg = {};
+  msg.msg_flags = -1;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+
+  ASSERT_THAT(RetryEINTR(recvmsg)(sockets->second_fd(), &msg, MSG_TRUNC),
+              SyscallSucceedsWithValue(0));
+
+  // Check that msghdr flags were cleared (MSG_TRUNC was not set). Because
+  // the receive buffer was zero length, data can't have been truncated.
+  EXPECT_EQ(msg.msg_flags, 0);
+}
+
+TEST_P(StreamSocketPairTest, RecvmsgTruncPeekZeroLen) {
+  auto sockets = ASSERT_NO_ERRNO_AND_VALUE(NewSocketPair());
+
+  char sent_data[10];
+  RandomizeBuffer(sent_data, sizeof(sent_data));
+  ASSERT_THAT(
+      RetryEINTR(send)(sockets->first_fd(), sent_data, sizeof(sent_data), 0),
+      SyscallSucceedsWithValue(sizeof(sent_data)));
+
+  char received_data[0] = {};
+
+  struct iovec iov;
+  iov.iov_base = received_data;
+  iov.iov_len = sizeof(received_data);
+  struct msghdr msg = {};
+  msg.msg_flags = -1;
+  msg.msg_iov = &iov;
+  msg.msg_iovlen = 1;
+
+  ASSERT_THAT(
+      RetryEINTR(recvmsg)(sockets->second_fd(), &msg, MSG_TRUNC | MSG_PEEK),
+      SyscallSucceedsWithValue(0));
+
+  // Check that msghdr flags were cleared (MSG_TRUNC was not set). Because
+  // the receive buffer was zero length, data can't have been truncated.
+  EXPECT_EQ(msg.msg_flags, 0);
+}
 TEST_P(StreamSocketPairTest, MsgTrunc) {
   auto sockets = ASSERT_NO_ERRNO_AND_VALUE(NewSocketPair());
   char sent_data[512];
