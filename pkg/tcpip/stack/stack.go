@@ -402,6 +402,10 @@ type Stack struct {
 
 	// ndpConfigs is the NDP configurations used by interfaces.
 	ndpConfigs NDPConfigurations
+
+	// ndpDisp is the NDP event dispatcher that is used to send the netstack
+	// integrator NDP related events.
+	ndpDisp NDPDispatcher
 }
 
 // Options contains optional Stack configuration.
@@ -435,6 +439,10 @@ type Options struct {
 	// DupAddrDetectTransmits field, implying that DAD will not be performed
 	// before assigning an address to a NIC.
 	NDPConfigs NDPConfigurations
+
+	// NDPDisp is the NDP event dispatcher that an integrator can provide to
+	// receive NDP related events.
+	NDPDisp NDPDispatcher
 }
 
 // TransportEndpointInfo holds useful information about a transport endpoint
@@ -497,6 +505,10 @@ func New(opts Options) *Stack {
 		icmpRateLimiter:    NewICMPRateLimiter(),
 		portSeed:           generateRandUint32(),
 		ndpConfigs:         opts.NDPConfigs,
+		ndpDisp:            opts.NDPDisp,
+	}
+	if s.ndpDisp != nil {
+		s.ndpDisp.BindToStack(s)
 	}
 
 	// Add specified network protocols.

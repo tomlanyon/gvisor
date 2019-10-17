@@ -51,6 +51,25 @@ const (
 	minimumRetransmitTimer = time.Millisecond
 )
 
+// NDPDispatcher is the interface integrators of netstack must implement to
+// receive and handle NDP related events.
+type NDPDispatcher interface {
+	// BindToStack binds this NDPDispatcher to the provided Stack. Future
+	// calls to other methods on this NDPDispatcher will be from the stack
+	// this NDPDispatcher is bound to.
+	BindToStack(s *Stack)
+
+	// OnDuplicateAddressDetectionStatus will be called by the stack when
+	// the DAD process for an address (addr) on a NIC (with ID nicid)
+	// completes. resolved will be set to true if DAD completed successfully
+	// (no duplicate addr detected); false otherwise (addr was detected to
+	// be a duplicate on the link the NIC is a part of, or it was stopped
+	// for some other reason, such as the address getting removed).
+	//
+	// This function will be called in its own goroutine.
+	OnDuplicateAddressDetectionStatus(nicid tcpip.NICID, addr tcpip.Address, resolved bool)
+}
+
 // NDPConfigurations is the NDP configurations for the netstack.
 type NDPConfigurations struct {
 	// The number of Neighbor Solicitation messages to send when doing
@@ -88,6 +107,9 @@ func (c *NDPConfigurations) validate() {
 
 // ndpState is the per-interface NDP state.
 type ndpState struct {
+	// The NIC this ndpState is for.
+	n *NIC
+
 	// The DAD state to send the next NS message, or resolve the address.
 	dad map[tcpip.Address]dadState
 }
@@ -110,8 +132,8 @@ type dadState struct {
 // This function must only be called by IPv6 addresses that are currently
 // tentative.
 //
-// The NIC that ndp belongs to (n) MUST be locked.
-func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, ref *referencedNetworkEndpoint) *tcpip.Error {
+// The NIC that ndp belongs to MUST be locked.
+func (ndp *ndpState) startDuplicateAddressDetection(addr tcpip.Address, ref *referencedNetworkEndpoint) *tcpip.Error {
 	// addr must be a valid unicast IPv6 address.
 	if !header.IsV6UnicastAddress(addr) {
 		return tcpip.ErrAddressFamilyNotSupported
@@ -127,13 +149,13 @@ func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, 
 		// reference count would have been increased without doing the
 		// work that would have been done for an address that was brand
 		// new. See NIC.addPermanentAddressLocked.
-		panic(fmt.Sprintf("ndpdad: already performing DAD for addr %s on NIC(%d)", addr, n.ID()))
+		panic(fmt.Sprintf("ndpdad: already performing DAD for addr %s on NIC(%d)", addr, ndp.n.ID()))
 	}
 
-	remaining := n.stack.ndpConfigs.DupAddrDetectTransmits
+	remaining := ndp.n.stack.ndpConfigs.DupAddrDetectTransmits
 
 	{
-		done, err := ndp.doDuplicateAddressDetection(n, addr, remaining, ref)
+		done, err := ndp.doDuplicateAddressDetection(addr, remaining, ref)
 		if err != nil {
 			return err
 		}
@@ -146,9 +168,9 @@ func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, 
 
 	var done bool
 	var timer *time.Timer
-	timer = time.AfterFunc(n.stack.ndpConfigs.RetransmitTimer, func() {
-		n.mu.Lock()
-		defer n.mu.Unlock()
+	timer = time.AfterFunc(ndp.n.stack.ndpConfigs.RetransmitTimer, func() {
+		ndp.n.mu.Lock()
+		defer ndp.n.mu.Unlock()
 
 		if done {
 			// If we reach this point, it means that the DAD timer
@@ -159,7 +181,7 @@ func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, 
 			return
 		}
 
-		ref, ok := n.endpoints[NetworkEndpointID{addr}]
+		ref, ok := ndp.n.endpoints[NetworkEndpointID{addr}]
 		if !ok {
 			// This should never happen.
 			// We should have an endpoint for addr since we are
@@ -167,19 +189,25 @@ func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, 
 			// exist, but we are doing DAD on it, then we started
 			// DAD at some point, but forgot to stop it when the
 			// endpoint was deleted.
-			panic(fmt.Sprintf("ndpdad: unrecognized addr %s for NIC(%d)", addr, n.ID()))
+			panic(fmt.Sprintf("ndpdad: unrecognized addr %s for NIC(%d)", addr, ndp.n.ID()))
 		}
 
-		if done, err := ndp.doDuplicateAddressDetection(n, addr, remaining, ref); err != nil || done {
+		if done, err := ndp.doDuplicateAddressDetection(addr, remaining, ref); err != nil || done {
+			delete(ndp.dad, addr)
+
 			if err != nil {
-				log.Printf("ndpdad: Error occured during DAD iteration for addr (%s) on NIC(%d); err = %s", addr, n.ID(), err)
+				log.Printf("ndpdad: Error occured during DAD iteration for addr (%s) on NIC(%d); err = %s", addr, ndp.n.ID(), err)
+			} else {
+				// Let the integrator know DAD was resolved.
+				if ndp.n.stack.ndpDisp != nil {
+					go ndp.n.stack.ndpDisp.OnDuplicateAddressDetectionStatus(ndp.n.ID(), addr, true)
+				}
 			}
 
-			ndp.stopDuplicateAddressDetection(addr)
 			return
 		}
 
-		timer.Reset(n.stack.ndpConfigs.RetransmitTimer)
+		timer.Reset(ndp.n.stack.ndpConfigs.RetransmitTimer)
 		remaining--
 
 	})
@@ -204,11 +232,11 @@ func (ndp *ndpState) startDuplicateAddressDetection(n *NIC, addr tcpip.Address, 
 // The NIC that ndp belongs to (n) MUST be locked.
 //
 // Returns true if DAD has resolved; false if DAD is still ongoing.
-func (ndp *ndpState) doDuplicateAddressDetection(n *NIC, addr tcpip.Address, remaining uint8, ref *referencedNetworkEndpoint) (bool, *tcpip.Error) {
+func (ndp *ndpState) doDuplicateAddressDetection(addr tcpip.Address, remaining uint8, ref *referencedNetworkEndpoint) (bool, *tcpip.Error) {
 	if ref.getKind() != permanentTentative {
 		// The endpoint should still be marked as tentative
 		// since we are still performing DAD on it.
-		panic(fmt.Sprintf("ndpdad: addr %s is not tentative on NIC(%d)", addr, n.ID()))
+		panic(fmt.Sprintf("ndpdad: addr %s is not tentative on NIC(%d)", addr, ndp.n.ID()))
 	}
 
 	if remaining == 0 {
@@ -219,17 +247,17 @@ func (ndp *ndpState) doDuplicateAddressDetection(n *NIC, addr tcpip.Address, rem
 
 	// Send a new NS.
 	snmc := header.SolicitedNodeAddr(addr)
-	snmcRef, ok := n.endpoints[NetworkEndpointID{snmc}]
+	snmcRef, ok := ndp.n.endpoints[NetworkEndpointID{snmc}]
 	if !ok {
 		// This should never happen as if we have the
 		// address, we should have the solicited-node
 		// address.
-		panic(fmt.Sprintf("ndpdad: NIC(%d) is not in the solicited-node multicast group (%s) but it has addr %s", n.ID(), snmc, addr))
+		panic(fmt.Sprintf("ndpdad: NIC(%d) is not in the solicited-node multicast group (%s) but it has addr %s", ndp.n.ID(), snmc, addr))
 	}
 
 	// Use the unspecified address as the source address when performing
 	// DAD.
-	r := makeRoute(header.IPv6ProtocolNumber, header.IPv6Any, snmc, n.linkEP.LinkAddress(), snmcRef, false, false)
+	r := makeRoute(header.IPv6ProtocolNumber, header.IPv6Any, snmc, ndp.n.linkEP.LinkAddress(), snmcRef, false, false)
 
 	hdr := buffer.NewPrependable(int(r.MaxHeaderLength()) + header.ICMPv6NeighborSolicitMinimumSize)
 	pkt := header.ICMPv6(hdr.Prepend(header.ICMPv6NeighborSolicitMinimumSize))
@@ -275,5 +303,8 @@ func (ndp *ndpState) stopDuplicateAddressDetection(addr tcpip.Address) {
 
 	delete(ndp.dad, addr)
 
-	return
+	// Let the integrator know DAD did not resolve.
+	if ndp.n.stack.ndpDisp != nil {
+		go ndp.n.stack.ndpDisp.OnDuplicateAddressDetectionStatus(ndp.n.ID(), addr, false)
+	}
 }

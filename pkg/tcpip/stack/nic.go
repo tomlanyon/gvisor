@@ -79,7 +79,7 @@ const (
 )
 
 func newNIC(stack *Stack, id tcpip.NICID, name string, ep LinkEndpoint, loopback bool) *NIC {
-	return &NIC{
+	n := &NIC{
 		stack:      stack,
 		id:         id,
 		name:       name,
@@ -102,6 +102,8 @@ func newNIC(stack *Stack, id tcpip.NICID, name string, ep LinkEndpoint, loopback
 			dad: make(map[tcpip.Address]dadState),
 		},
 	}
+	n.ndp.n = n
+	return n
 }
 
 // enable enables the NIC. enable will attach the link to its LinkEndpoint and
@@ -377,7 +379,7 @@ func (n *NIC) addAddressLocked(protocolAddress tcpip.ProtocolAddress, peb Primar
 
 	// If we are adding a tentative IPv6 address, start DAD.
 	if isIPv6Unicast && kind == permanentTentative {
-		if err := n.ndp.startDuplicateAddressDetection(n, protocolAddress.AddressWithPrefix.Address, ref); err != nil {
+		if err := n.ndp.startDuplicateAddressDetection(protocolAddress.AddressWithPrefix.Address, ref); err != nil {
 			return nil, err
 		}
 	}
