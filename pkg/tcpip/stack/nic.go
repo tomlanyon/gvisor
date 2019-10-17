@@ -286,9 +286,16 @@ func (n *NIC) addPermanentAddressLocked(protocolAddress tcpip.ProtocolAddress, p
 			// The NIC already have a permanent endpoint with that address.
 			return nil, tcpip.ErrDuplicateAddress
 		case permanentExpired, temporary:
-			// Promote the endpoint to become permanent.
+			// Promote the endpoint to become permanent and respect
+			// the new peb.
 			if ref.tryIncRef() {
 				ref.setKind(permanent)
+
+				// Remove the endpoint from the primary list (if
+				// it was originally in it) and respect peb.
+				n.removePrimaryEndpointLocked(ref)
+				n.addPrimaryEndpointLocked(ref, peb)
+
 				return ref, nil
 			}
 			// tryIncRef failing means the endpoint is scheduled to be removed once
@@ -347,18 +354,7 @@ func (n *NIC) addAddressLocked(protocolAddress tcpip.ProtocolAddress, peb Primar
 
 	n.endpoints[id] = ref
 
-	l, ok := n.primary[protocolAddress.Protocol]
-	if !ok {
-		l = &ilist.List{}
-		n.primary[protocolAddress.Protocol] = l
-	}
-
-	switch peb {
-	case CanBePrimaryEndpoint:
-		l.PushBack(ref)
-	case FirstPrimaryEndpoint:
-		l.PushFront(ref)
-	}
+	n.addPrimaryEndpointLocked(ref, peb)
 
 	return ref, nil
 }
@@ -471,6 +467,36 @@ func (n *NIC) AddressRanges() []tcpip.Subnet {
 	return append(sns, n.addressRanges...)
 }
 
+// removePrimaryEndpointLocked removes an endpoint r from n's list of primary
+// endpoints, if it exists in the list.
+//
+// n MUST be locked.
+func (n *NIC) removePrimaryEndpointLocked(r *referencedNetworkEndpoint) {
+	wasInList := r.Next() != nil || r.Prev() != nil || r == n.primary[r.protocol].Front()
+	if wasInList {
+		n.primary[r.protocol].Remove(r)
+	}
+}
+
+// addPrimaryEndpointLocked adds an endpoint r to n's list of primary endpoints,
+// as required by peb.
+//
+// n MUST be locked.
+func (n *NIC) addPrimaryEndpointLocked(r *referencedNetworkEndpoint, peb PrimaryEndpointBehavior) {
+	l, ok := n.primary[r.protocol]
+	if !ok {
+		l = &ilist.List{}
+		n.primary[r.protocol] = l
+	}
+
+	switch peb {
+	case CanBePrimaryEndpoint:
+		l.PushBack(r)
+	case FirstPrimaryEndpoint:
+		l.PushFront(r)
+	}
+}
+
 func (n *NIC) removeEndpointLocked(r *referencedNetworkEndpoint) {
 	id := *r.ep.ID()
 
@@ -488,10 +514,7 @@ func (n *NIC) removeEndpointLocked(r *referencedNetworkEndpoint) {
 	}
 
 	delete(n.endpoints, id)
-	wasInList := r.Next() != nil || r.Prev() != nil || r == n.primary[r.protocol].Front()
-	if wasInList {
-		n.primary[r.protocol].Remove(r)
-	}
+	n.removePrimaryEndpointLocked(r)
 
 	r.ep.Close()
 }
